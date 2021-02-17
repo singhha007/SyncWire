@@ -1,0 +1,178 @@
+syntax = "proto3";
+package sync.protocol;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+
+// ------------------------------------------------
+// helper types
+// ------------------------------------------------
+
+message EntityMetadata {
+  int64 id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message TypedEntityMetadataList {
+  string typeId = 1;  //TypeUrl
+  repeated EntityMetadata entries = 2;
+}
+
+message TypedEntityMetadata {
+  string typeId = 1; //TypeUrl
+  EntityMetadata entityMetadata = 2;
+}
+
+message EntityEvent {
+  message Create {
+    // Entities created by the client will have their ID replaced by a server-generated one. We send it here
+    // to let the client resolve the situation. Zero means null.
+    int64 clientSideId = 1;
+
+    // The actual entity data types are defined in entities.proto.
+    // The any type is expressed as a type ID (usually URI, but may be any kind of unique string), and a valid Protobuf
+    // byte string representing the object.
+    google.protobuf.Any body = 2;
+  }
+
+  message Update {
+    google.protobuf.Any body = 1;
+  }
+
+  message Delete {
+    int64 id = 1;
+  }
+
+  TypedEntityMetadata entityMetadata = 1;
+  oneof content {
+    Create create = 2;
+    Update update = 3;
+    Delete delete = 4;
+  }
+}
+
+message EntityEventBatch {
+  string batchId = 1;
+  repeated EntityEvent entityEvents = 2;
+}
+
+// ------------------------------------------------
+// client messages
+// ------------------------------------------------
+
+message ClientMessage {
+
+  // Wipes server-side cache and re-syncs the data.
+  // Passing an empty map in the localTimestamps field effectively makes the server re-send the entire state.
+  message ResetRequest {
+    // IDs of all unsynced actions
+    repeated string localActionIds = 1;
+
+    // metadata (type + id + timestamp) of every entity that the mobile app knows about
+    repeated TypedEntityMetadataList metadata = 2;
+  }
+
+  // a lightweight way to resume a connection if the backend still keeps its state in the cache.
+  message ResumeRequest {
+    // last entity Event batch processed by the client.z
+    string lastProcessedEntityEventBatchId = 1;
+  }
+
+  // represents an atomic action that should be applied as transaction.
+  message ActionRequest {
+    string actionId = 1;
+    // The actual action data types are defined in actions.proto
+    google.protobuf.Any content = 2;
+  }
+
+  // Lets the server know that a given entity event batch was processed successfully.
+  // This applies to action results too!
+  message EntityEventAcknowledgement {
+    string batchId = 1;
+  }
+
+  oneof content {
+    ResetRequest resetRequest = 1;
+    ResumeRequest resumeRequest = 2;
+    ActionRequest actionRequest = 3;
+    EntityEventAcknowledgement entityEventAcknowledgement = 4;
+  }
+}
+
+// ------------------------------------------------
+// server messages
+// ------------------------------------------------
+
+message ServerMessage {
+  message ResetResponse {
+    // allows the client to clear actions that have been sent to the server, but were not confirmed,
+    // for ex. because of connection drop
+    repeated string confirmedActionIds = 1;
+    // all entities that the mobile needs but does not have, according to the metadata from the reset request
+    EntityEventBatch entityEvents = 2;
+  }
+
+  message ResumeResponse {
+    // because actions are processed serially, at most one action can be unconfirmed during a connection.
+    // this field allows the client to clear the action that was recently sent but not confirmed yet.
+    string lastConfirmedActionId = 2;
+    // all EntityEvents that happened since the previous session was interrupted.
+    EntityEventBatch entityEvents = 3;
+  }
+
+  message ActionResponse {
+    string actionId = 1;
+    bool success = 2;
+    // all entities that were affected by the action
+    EntityEventBatch entityEvents = 3;
+    // optional, intended to be shown to the user
+    string errorMessage = 4;
+  }
+
+  // notifies the client about entity updates relevant to the client
+  message EntityEventNotification {
+    EntityEventBatch entityEvents = 1;
+  }
+
+  oneof content {
+    ResetResponse resetResponse = 1;
+    ResumeResponse resumeResponse = 2;
+    ActionResponse actionResponse = 3;
+    EntityEventNotification entityEventNotification = 4;
+  }
+}
+
+/*
+Overview:
+0. If anything goes wrong, the connection is terminated, and has to be re-initiated by the client.
+1. Client connects to the server.
+2. Client sends request headers (a.k.a. request metadata) containing two fields: "userId" and "deviceId".
+3. Server sends response headers (a.k.a. response metadata) containing just one field for now: "canResume" what a value of either "True" or "False".
+4. Client sends ResetRequest or ResumeRequest.
+5. Server responds with ResetResponse or ResumeResponse.
+
+Once the connection is established and the initial handshake is completed, the following messages can be sent over the wire:
+a. ActionRequest (client)
+b. ActionResponse (server)
+c. EntityEventNotification (server)
+d. EntityEventAcknowledgement (client)
+
+The server keeps a queue of events (client actions or entity updates) internally, processing them one by one.
+In the "main loop" of the connection logic, the server dequeues events until the queue is empty OR it dequeues an ActionRequest.
+The dequeued EntityEvents are then put together as a "batch" (a group of entity updates identified by a BatchID), and sent
+to the client.
+If the server does not dequeue an ActionRequest, the loop starts over and the server waits until something gets added to the queue.
+If the server does dequeue an ActionRequest, it processes the action and sends back an ActionResponse before continuing the loop.
+Actions are processed sequentially in the same order they were received.
+
+Whenever the client receives an ActionResponse or EntityEventNotification, it must respond with an EntityEventAcknowledgement message
+to let the server know that a given batch of entity updates was successfully processed.
+
+To minimize the amount of data sent over the wire, the server keeps a record of entity metadata (type, ID and timestamp) known by the client.
+That cache is used to discard outdated entity updates before they are sent to the client, and to allow the client to resume
+an interrupted session without having to re-sync everything.
+ */
+
+service SyncService {
+  rpc Synchronize (stream ClientMessage) returns (stream ServerMessage);
+}
