@@ -33,12 +33,8 @@ class MainActivity : AppCompatActivity() {
     private fun attachToServer() {
         client.Synchronize().executeIn(GlobalScope).apply {
             action = first
-            lifecycleScope.launch {
-                second.consumeEach {
-                    Log.d("HSING", "Received")
-                }
-            }
-//            listenToServer()
+            dataSnapshot = second
+            listenToServer()
             val createCounter = CreateCounter(54L, "Counter", 2)
             lifecycleScope.launch {
                 action.send(

@@ -6,8 +6,9 @@ import okhttp3.Protocol
 import okhttp3.logging.HttpLoggingInterceptor
 import sync.protocol.SyncServiceClient
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 
-private const val TIMEOUT_DURATION = 10L
+private const val TIMEOUT_DURATION = 0L
 private const val HEADER_AUTH_TOKEN = "token"
 private const val HEADER_DEVICE_ID = "deviceid"
 private const val HEADER_USER_ID = "userid"
@@ -25,11 +26,11 @@ object GrpcProvider {
 
     private fun provideOkHttpClient() =
         OkHttpClient.Builder()
-            .readTimeout(Duration.ofMinutes(TIMEOUT_DURATION))
-            .writeTimeout(Duration.ofMinutes(TIMEOUT_DURATION))
-            .callTimeout(Duration.ofMinutes(TIMEOUT_DURATION))
             .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
-            .addInterceptor(HttpLoggingInterceptor().apply { setLevel(HttpLoggingInterceptor.Level.BODY) })
+            .readTimeout(TIMEOUT_DURATION, TimeUnit.SECONDS)
+            .writeTimeout(TIMEOUT_DURATION, TimeUnit.SECONDS)
+            .callTimeout(TIMEOUT_DURATION, TimeUnit.SECONDS)
+            //.addInterceptor(HttpLoggingInterceptor().apply { setLevel(HttpLoggingInterceptor.Level.BODY) })
             .addInterceptor {
                 it.proceed(
                     it.request().newBuilder()
